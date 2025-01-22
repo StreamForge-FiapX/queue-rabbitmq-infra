@@ -1,0 +1,49 @@
+name: SonarQube Cloud
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  build:
+    name: Implementar no EKS
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Configure Kubernetes credentials (kubectl)
+        run: |
+          aws eks update-kubeconfig --region sa-east-1 --name streamforge
+
+      - name: Retrieve Secrets from AWS Secrets Manager and create Kubernetes secret
+        run: |
+          secret=$(aws secretsmanager get-secret-value --secret-id rabbitmq-credentials --region sa-east-1 --query SecretString --output text)
+
+          # Parse o JSON dos segredos
+          rabbit_port=$(echo $secret | jq -r '.rabbit_port')
+          rabbit_user=$(echo $secret | jq -r '.rabbit_user')
+          rabbit_password=$(echo $secret | jq -r '.rabbit_password')
+
+          # Criar o secret no Kubernetes
+          kubectl delete secret rabbitmq-credentials || true  # Para evitar erro caso já exista
+          kubectl create secret generic rabbitmq-credentials \
+            --from-literal=rabbit_port=$rabbit_port \
+            --from-literal=rabbit_user=$rabbit_user \
+            --from-literal=rabbit_password=$rabbit_password            
+
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f rabbitmq-deployment.yaml
+          kubectl apply -f rabbitmq-service.yaml
+          kubectl apply -f hpa.yaml
